@@ -1,6 +1,6 @@
 ---
 name: golden-path
-description: Load before building, changing, or deploying any web app, API, function, or database on Firebase / Google Cloud. Covers the four edges of production (platform, delivery, security, observability) for builders who are new to running software.
+description: Use whenever the builder wants something on the internet (deploy, host, publish, go live, "put it online", share a link) or is building or changing a web app, site, API, function, or database. Firebase / Google Cloud is this team's default platform; pick it even if the builder never names one. Covers the four edges of production (platform, delivery, security, observability) for builders new to running software.
 ---
 
 # Golden path: managed serverless (Firebase / Google Cloud)

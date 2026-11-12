@@ -39,12 +39,13 @@ Modern coding agents give us three primitives to turn tribal production wisdom i
 
 ```mermaid
 flowchart LR
-    Builder["Builder Prompt"] --> Hook{"Pre-Prompt Hook: secret-scan.sh"}
-    Hook -- "Secret found (continue: false)" --> Blocked["Blocked Locally + Rotate Key + Session Wiped on Exit"]
-    Hook -- "Clean (exit 0)" --> Agent["AI Agent + Golden-Path Skill"]
+    Builder["Builder Prompt"] --> Hook{"UserPromptSubmit Hook: secret-scan.sh"}
+    Hook -- "Secret found" --> Blocked["Blocked: never sent, not echoed. Rotate key, then /exit"]
+    Blocked -- "SessionEnd hook" --> Wiped["Local transcript + prompt history deleted"]
+    Hook -- "Clean" --> Agent["AI Agent + Golden-Path Skill"]
     Agent --> Perms{"Permissions & Scoped MCP"}
-    Perms -- "Inspect live state" --> ReadMCP["Read-Only K8s / Scoped Firebase"]
-    Perms -- "Direct deploy" --> Denied["Denied: Ship via PR + CI"]
+    Perms -- "Inspect live state" --> ReadMCP["Read-Only K8s + Firebase Read Tools"]
+    Perms -- "Local deploy CLI" --> Denied["Denied: Ship via PR + CI"]
     Agent --> PR["Pull Request + Done Checklist"]
 ```
 
@@ -101,6 +102,37 @@ echo '{"prompt":"add a contact form"}' \
 # exit=0
 ```
 
+#### What the hook does in a real session
+
+The same script handles two Claude Code hook events. Blocking happens immediately; the local cleanup happens when the builder exits:
+
+```mermaid
+sequenceDiagram
+    actor B as Builder
+    participant CC as Claude Code
+    participant H as secret-scan.sh
+    participant D as Local disk (~/.claude)
+    participant M as Model API
+    B->>CC: Prompt containing sk_live_...
+    CC->>D: Record prompt in session transcript and history
+    CC->>H: UserPromptSubmit event (prompt, transcript_path)
+    H->>H: Ignore firebaseConfig apiKey, match token patterns
+    alt Secret found (or grep errors: fail closed)
+        H->>D: Mark session (.secret-blocked file next to transcript)
+        H-->>CC: continue false + stopReason
+        CC-->>B: Rotate the key, then /exit (secret not echoed)
+        Note over M: Never called
+        B->>CC: /exit
+        CC->>H: SessionEnd event (session_id, transcript_path)
+        H->>D: Marked, so delete transcript and this session's history lines
+    else Clean prompt
+        H-->>CC: No output, exit 0
+        CC->>M: Prompt sent as normal
+    end
+```
+
+Cleanup only runs on a clean exit. If Claude Code crashes or is killed, the marked transcript stays on disk; find it with `ls ~/.claude/projects/*/*.secret-blocked` and delete the matching `.jsonl`.
+
 ### 2. Drop the guardrails into your own project
 
 The example configs use **Claude Code**'s layout, stored without leading dots so they don't activate inside this companion repo itself. Copy them from the root of your target project:
@@ -110,7 +142,7 @@ The example configs use **Claude Code**'s layout, stored without leading dots so
 mkdir -p .claude/skills
 cp -r path/to/from-vibe-to-live-kubecon-2026/skills/golden-path .claude/skills/
 
-# 2. Pre-prompt secret scanner + deploy deny rule
+# 2. Secret-scan hook (UserPromptSubmit + SessionEnd) + deploy deny rules
 mkdir -p .claude/hooks
 cp path/to/from-vibe-to-live-kubecon-2026/examples/claude-code/hooks/secret-scan.sh .claude/hooks/
 chmod +x .claude/hooks/secret-scan.sh
@@ -126,7 +158,7 @@ cp path/to/from-vibe-to-live-kubecon-2026/examples/claude-code/mcp.json .mcp.jso
 ### Production Notes
 
 - **Swap the demo regex list for a real scanner.** [`secret-scan.sh`](examples/claude-code/hooks/secret-scan.sh) matches common token prefixes for clarity. In production, invoke [Gitleaks](https://github.com/gitleaks/gitleaks) or [TruffleHog](https://github.com/trufflesecurity/trufflehog) inside the hook.
-- **Blocking isn't forgetting.** A blocked prompt never reaches the model, but Claude Code still writes it to the local session transcript (`~/.claude/projects/…`) and prompt history, where `claude --resume` or the up arrow would bring it back. The hook marks that session, and its `SessionEnd` half deletes the transcript and the session's history lines when the builder exits. It blocks with `{"continue": false}` rather than `exit 2`, because `exit 2` makes Claude Code echo the original prompt, secret included, back on screen.
+- **Blocking isn't forgetting.** A blocked prompt never reaches the model, but Claude Code still writes it to the local session transcript (`~/.claude/projects/…`) and prompt history, where `claude --resume` or the up arrow would bring it back. That's why the hook also runs on `SessionEnd` (see the [sequence diagram](#what-the-hook-does-in-a-real-session)). It blocks with `{"continue": false}` rather than `exit 2`, because `exit 2` makes Claude Code echo the original prompt, secret included, back on screen.
 - **Firebase web config isn't a secret.** The hook lets a pasted `firebaseConfig` `apiKey` through (those keys are public by design; rules and App Check protect the data) but still blocks other `AIza…` keys such as Gemini API keys.
 - **Enforce read-only at both layers.** Passing `--read-only` to `kubernetes-mcp-server` hides mutating tools from the agent; pair it with a `kubeconfig` bound to a view-only Kubernetes RBAC role. Firebase MCP has no read-only switch, so [`mcp.json`](examples/claude-code/mcp.json) uses `--tools` to allowlist only read tools. `--only firestore,auth` alone would still expose `firestore_delete_database` and `auth_update_user`.
 - **Deny the deploy CLIs, then remove the credentials.** [`settings.json`](examples/claude-code/settings.json) denies `Bash(firebase deploy:*)`, `Bash(gcloud run deploy:*)`, and friends, so the agent's default path is a PR. Bash deny rules match command prefixes, so they guide rather than wall off. The real backstop is that only CI (via Workload Identity Federation) holds production deploy permissions.
