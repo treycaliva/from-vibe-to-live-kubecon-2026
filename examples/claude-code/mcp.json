@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "kubernetes": {
+      "command": "npx",
+      "args": ["-y", "kubernetes-mcp-server@latest", "--read-only"]
+    },
+    "firebase": {
+      "command": "npx",
+      "args": ["-y", "firebase-tools@latest", "mcp", "--tools", "firebase_get_project,firebase_get_security_rules,firestore_list_collections,firestore_list_documents,firestore_get_document,firestore_query_collection,auth_get_users"]
+    }
+  }
+}
